@@ -16,7 +16,7 @@ from bs4 import BeautifulSoup, Tag
 
 from gaceta.config import BASE_URL
 from gaceta.models import Anexo, Norma
-from gaceta.utils.dates import parse_fecha_espanol
+from gaceta.utils.dates import FECHA_ESPANOL_RE, parse_fecha_espanol
 from gaceta.utils.text import normalize_space
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,9 @@ ANEXO_HREF_RE = re.compile(r"/anexos/descargarAnexo/\d+$")
 FECHA_PUBLICACION_RE = re.compile(r"Fecha de Publicaci[oó]n:\s*(\d{4}-\d{2}-\d{2})")
 # Encabezado del listado: "Página 1 de 2 // mostrando normas 1 - 20 // 32 en total"
 RESUMEN_RE = re.compile(r"P[aá]gina\s+(\d+)\s+de\s+(\d+)\s*//[^/]*//\s*(\d+)\s+en total")
+# Fecha al inicio de un epígrafe que no la trae en <strong>, con su separador
+# ("28 DE AGOSTO DE 2026 .- "). Reconoce la forma aunque la fecha sea inválida.
+PREFIJO_FECHA_RE = re.compile(FECHA_ESPANOL_RE.pattern + r"\s*\.?\s*-?", re.IGNORECASE)
 
 
 class ParseError(Exception):
@@ -149,7 +152,12 @@ def _parse_epigrafe(card: Tag) -> tuple[str | None, str | None]:
     # medio del texto sería énfasis y no debe recortarse del epígrafe.
     if prefijo and texto.startswith(prefijo):
         return prefijo, texto.removeprefix(prefijo).strip() or None
-    # Sin <strong>: se intenta leer la fecha al inicio del texto completo.
+    # Sin <strong>: si el texto empieza con una fecha, se separa igual, para que
+    # el epígrafe nunca la incluya. Si no, el texto completo va al parseo de
+    # fecha, que devolverá None y dejará el warning.
+    match = PREFIJO_FECHA_RE.match(texto)
+    if match:
+        return match.group(0).strip(), texto[match.end():].strip() or None
     return texto, texto or None
 
 

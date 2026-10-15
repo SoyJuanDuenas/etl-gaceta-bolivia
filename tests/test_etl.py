@@ -8,6 +8,7 @@ import logging
 from datetime import date
 from pathlib import Path
 
+import pytest
 import requests
 
 from gaceta import crawler, etl
@@ -26,7 +27,8 @@ class FakeResponse:
         self.content = content
 
     def raise_for_status(self) -> None:
-        pass
+        if 400 <= self.status_code < 500:
+            raise requests.HTTPError(f"HTTP {self.status_code}")
 
 
 class FixtureSession(requests.Session):
@@ -97,6 +99,50 @@ def test_total_que_no_cuadra_marca_corrida_incompleta(monkeypatch, caplog):
     assert len(normas) == 20
     assert stats.corrida_incompleta is True
     assert "declara 32 normas en total pero se procesaron 20" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("href_original", "campo"),
+    [("/normas/descargarNrms/", "anexo_url"), ("/edicions/view/", "edicion")],
+)
+def test_norma_sin_campo_obligatorio_se_descarta_y_la_corrida_sigue(monkeypatch, caplog, href_original, campo):
+    # Se rompe el enlace en la primera tarjeta de la página 1 (id 281300).
+    html = PAGE1.read_bytes().replace(href_original.encode(), b"/otra/ruta/", 1)
+    session = FixtureSession([html])
+
+    with caplog.at_level(logging.ERROR):
+        normas, stats = _run(monkeypatch, session)
+
+    assert len(normas) == 19
+    assert stats.descartadas == 1
+    errores = [r.getMessage() for r in caplog.records if "descartada" in r.getMessage()]
+    assert len(errores) == 1
+    assert "document_id=281300" in errores[0] and "posición 1" in errores[0] and campo in errores[0]
+
+
+class StatusSession(requests.Session):
+    """Responde siempre el mismo status HTTP."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__()
+        self.status = status
+        self.urls: list[str] = []
+
+    def get(self, url, timeout):
+        self.urls.append(url)
+        return FakeResponse(self.status)
+
+
+def test_error_4xx_no_se_reintenta(monkeypatch, caplog):
+    session = StatusSession(404)
+
+    with caplog.at_level(logging.ERROR):
+        normas, stats = _run(monkeypatch, session)
+
+    assert len(session.urls) == 1  # un 4xx no se arregla repitiendo la petición
+    assert normas == []
+    assert stats.corrida_incompleta is True
+    assert "Falló la descarga" in caplog.text
 
 
 class FlakySession(requests.Session):

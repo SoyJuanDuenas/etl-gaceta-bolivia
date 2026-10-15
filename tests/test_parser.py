@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from gaceta.parser import _absolute, find_cards, make_soup, parse_card, parse_resumen
+from gaceta.models import Norma
+from gaceta.parser import _absolute, card_document_id, find_cards, make_soup, parse_card, parse_resumen
 from gaceta.utils.dates import parse_fecha_espanol
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -78,6 +79,48 @@ def test_fecha_emision_invalida_queda_null_con_warning(caplog):
     assert rm.fecha_emision is None
     assert any("281338" in r.getMessage() and "fecha_emision" in r.getMessage() for r in caplog.records)
 
+
+
+def _rm155_con_fecha(fecha: str, con_strong: bool = True) -> Norma:
+    """RM 155 (281338) real, con el prefijo de fecha del epígrafe reemplazado por `fecha`.
+
+    Con `con_strong=False` la fecha queda como texto plano, sin el <strong>.
+    """
+    soup = make_soup(_load(PAGE2))
+    card = next(c for c in find_cards(soup) if card_document_id(c) == "281338")
+    strong = card.find("div", class_="contentpaneopen").find("strong")
+    if con_strong:
+        strong.string = fecha
+    else:
+        strong.replace_with(fecha)
+    return parse_card(card)
+
+
+@pytest.mark.parametrize(
+    ("fecha", "con_strong", "esperado"),
+    [
+        ("28 de agosto de 2026 .- ", True, "2026-08-28"),
+        ("1° DE SEPTIEMBRE DE 2026 .- ", True, "2026-09-01"),
+        ("01 DE AGOSTO DE 2026 .- ", True, "2026-08-01"),
+        ("28\xa0DE\xa0AGOSTO\xa0DE\xa02026 .- ", True, "2026-08-28"),
+        ("29 DE FEBRERO DE 2028 .- ", True, "2028-02-29"),
+        ("29 DE FEBRERO DE 2026 .- ", True, None),
+        ("0 DE AGOSTO DE 2026 .- ", True, None),
+        ("28 DE AGOSTO 2026 .- ", True, None),
+        ("", True, None),
+        ("28 DE AGOSTO DE 2026 .- ", False, "2026-08-28"),
+        ("31 DE FEBRERO DE 2026 .- ", False, None),
+    ],
+)
+def test_variantes_de_fecha_emision(fecha, con_strong, esperado, caplog):
+    with caplog.at_level(logging.WARNING, logger="gaceta.parser"):
+        rm = _rm155_con_fecha(fecha, con_strong)
+
+    assert rm.fecha_emision == esperado
+    assert rm.fecha_publicacion == "2026-09-02"  # nunca se mezcla con la de emisión
+    assert rm.epigrafe.startswith("Aprueba el")  # el prefijo de fecha nunca queda en el epígrafe
+    if esperado is None:
+        assert any("281338" in r.getMessage() for r in caplog.records)
 
 @pytest.mark.parametrize(
     ("texto", "esperado"),
